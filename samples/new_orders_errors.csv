@@ -1,0 +1,8 @@
+wo_id,created_at,priority,scope,facility_id,asset_id
+ERR-001,2026-07-01 08:15,P1-Emergency,HVAC,FAC-022,FAC-022-A01
+ERR-002,2026-07-01 09:00,,Electrical,FAC-034,FAC-034-A03
+ERR-003,01/07/2026,P3-Medium,Plumbing,FAC-001,
+ERR-004,2026-07-01 19:45,Urgent,Elevators,FAC-016,
+ERR-005,2026-07-02 10:05,P4-Low,Civil,FAC-999,
+ERR-006,2026-07-03 22:10,P3-Medium,HVAC,FAC-004,
+ERR-006,2026-07-03 22:10,P3-Medium,HVAC,FAC-004,
