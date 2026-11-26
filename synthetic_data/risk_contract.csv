@@ -1,0 +1,4 @@
+contract_id,work_orders,known,breaches,hp,overdue,avg_backlog,repeat_rate,breach_rate,high_priority_breach_rate,overdue_severity,risk_score,alt_score,main_drivers
+CON-02,1117,1071,191.0,47.0,98.671,2.0747,0.4745,0.1778,0.0437,0.0904,42.3037,42.626,overdue_severity + repeat_rate
+CON-01,725,702,115.0,28.0,62.2771,1.3309,0.3876,0.1634,0.0398,0.0863,34.517,35.7113,overdue_severity + breach_rate
+CON-03,1024,990,106.0,26.0,37.6097,1.7683,0.5293,0.1079,0.0265,0.0372,26.5511,23.0516,repeat_rate + avg_backlog

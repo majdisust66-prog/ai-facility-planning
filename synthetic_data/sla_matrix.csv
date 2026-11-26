@@ -1,0 +1,5 @@
+priority,response_sla_h,completion_sla_h
+P1-Emergency,1,4
+P2-High,4,24
+P3-Medium,8,72
+P4-Low,24,168

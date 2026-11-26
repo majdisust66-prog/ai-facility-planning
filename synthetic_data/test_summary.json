@@ -1,0 +1,18 @@
+{
+  "chosen_model": "Boosting depth=2 lr=0.05",
+  "threshold": 0.22466100071137537,
+  "test_rows": 2603,
+  "test_breaches": 395,
+  "TP": 189,
+  "FP": 473,
+  "FN": 206,
+  "TN": 1735,
+  "precision": 0.2854984894259819,
+  "recall": 0.47848101265822784,
+  "flag_rate": 0.2543219362274299,
+  "pr_auc_gain_over_rule_95ci": [
+    0.05880706568163647,
+    0.12664094372367976
+  ],
+  "median_warning_window_h_for_caught": 72.0
+}
