@@ -23,17 +23,27 @@ def boot():
 
 
 # language and theme survive a page reload through the URL (?lang=en&theme=dark)
-if "dark" not in st.session_state:
-    st.session_state.dark = st.query_params.get("theme") != "light"  # dark by default
+if "theme" not in st.session_state:
+    st.session_state.theme = "light" if st.query_params.get("theme") == "light" else "dark"  # dark by default
 if "lang" not in st.session_state:
     st.session_state.lang = "en" if st.query_params.get("lang") == "en" else "ar"
 top = st.columns(2)
 code = top[0].radio("Language", ["ar", "en"], format_func={"ar": "العربية", "en": "English"}.get,
                     horizontal=True, key="lang", label_visibility="collapsed")
 set_lang(code)
-dark = top[1].toggle(tr("🌙 الوضع الليلي", "🌙 Dark mode"), key="dark")
+# After a language switch, send each saved choice to the browser again so its label is redrawn
+# in the new language (otherwise the old text stays, or the menu loses its highlight).
+if st.session_state.get("shown_lang", code) != code:
+    for name in ["theme", "page", "ov_days", "ov_region", "risk_class", "ct_days", "memo_days",
+                 "memo_priority", "reviewer", "approve", "demo"]:
+        if name in st.session_state:
+            st.session_state[name] = st.session_state[name]
+st.session_state.shown_lang = code
+theme = top[1].radio("Theme", ["light", "dark"], horizontal=True, key="theme", label_visibility="collapsed",
+                     format_func=lambda t: tr("☀️ نهاري", "☀️ Light") if t == "light" else tr("🌙 ليلي", "🌙 Dark"))
+dark = theme == "dark"
 st.query_params["lang"] = code
-st.query_params["theme"] = "dark" if dark else "light"
+st.query_params["theme"] = theme
 ui.inject(dark)
 
 data, model = boot()
@@ -55,7 +65,8 @@ def days_back(d):
 
 
 def period_select(options, default, key):
-    return st.selectbox(tr("الفترة", "Period"), options, index=options.index(default), key=key,
+    st.session_state.setdefault(key, default)
+    return st.selectbox(tr("الفترة", "Period"), options, key=key,
                         format_func=lambda d: tr(f"آخر {d} يوماً", f"Last {d} days"))
 
 

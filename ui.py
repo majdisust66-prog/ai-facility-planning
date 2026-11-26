@@ -89,10 +89,11 @@ CSS = """
 .stApp [data-testid="stMarkdownContainer"] {direction: @dir; text-align: @align; width: 100%;}
 .stApp .section, .stApp .hero .h, .stApp .hero .p {text-align: @align; width: 100%;}
 .stApp .stButton [data-testid="stMarkdownContainer"] {text-align: center; width: auto;}
-header[data-testid="stHeader"] {background: transparent;}
+header[data-testid="stHeader"] {background: transparent; pointer-events: none;} /* the empty bar must not swallow clicks */
+header[data-testid="stHeader"] button, header[data-testid="stHeader"] a, [data-testid="stExpandSidebarButton"] {pointer-events: auto;}
 header[data-testid="stHeader"] button, header[data-testid="stHeader"] svg {color: @text !important;}
 [data-testid="stExpandSidebarButton"], [data-testid="stExpandSidebarButton"] *, [data-testid="stSidebarCollapseButton"], [data-testid="stSidebarCollapseButton"] * {color: @text !important; opacity: 1 !important; visibility: visible !important;}
-.block-container {padding-top: 2rem; max-width: 1220px;}
+.block-container {padding-top: 4.25rem; max-width: 1220px;} /* below the 60px header */
 .stApp p, .stApp li, .stApp label, .stApp h1, .stApp h2, .stApp h3, .stApp h4, [data-testid="stMarkdownContainer"], [data-testid="stWidgetLabel"] {color: @text;}
 [data-testid="stCaptionContainer"] p {color: @muted;}
 .stApp code {background: @soft; color: @accent; border-radius: 6px;}
@@ -130,9 +131,10 @@ div[data-baseweb="popover"] *, [role="listbox"], [role="option"] {background-col
 .head {display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; flex-wrap: wrap; margin: .2rem 0 1.2rem;}
 .head .t {font-size: 2rem; font-weight: 700; line-height: 1.35;}
 .head .s {color: @muted; font-size: .98rem;}
-.pill {display: inline-flex; align-items: center; gap: .4rem; border-radius: 999px; padding: .28rem .8rem; font-size: .78rem; font-weight: 600; background: @warnbg; color: @warn;}
-.meta-line {display: flex; flex-direction: column; align-items: flex-end; gap: .3rem;}
 .stApp .asof {color: @muted; font-size: .74rem;}
+/* theme switch sits at the far end of the top row, opposite the language choice */
+.st-key-theme, .st-key-theme > div {width: 100% !important; display: flex; flex-direction: column; align-items: flex-end;}
+.st-key-theme [role="radiogroup"] {justify-content: flex-end;}
 .brand {display: flex; gap: .7rem; align-items: center; margin-bottom: 1rem;}
 .stApp .brand .logo {width: 52px; height: 52px; flex: none; border-radius: 14px; box-shadow: 0 8px 20px -8px #0f766e;}
 .brand b {display: block; font-size: .95rem; color: @text;}
@@ -224,7 +226,7 @@ section[data-testid="stSidebar"] [role="radiogroup"] p {font-size: 1.04rem;}
 @media (max-width: 640px) {
 .hero {padding: 1.4rem 1.15rem; border-radius: 20px;} .hero .h {font-size: 1.35rem;} .hero .p {font-size: .98rem;}
 .feature {min-height: 0;}
-.block-container {padding: 3.4rem .75rem 2rem;}
+.block-container {padding: 4.25rem .75rem 2rem;}
 header[data-testid="stHeader"] {background: @bg;}
 .head .t {font-size: 1.45rem;} .head .s {font-size: .85rem;}
 .g4 {grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .55rem;}
@@ -321,11 +323,10 @@ def sidebar_art():
 
 
 def header(i, data_date):
-    note = tr("بيانات اصطناعية - نموذج أولي أكاديمي", "Synthetic data - academic prototype")
     as_of = tr("آخر تحديث للبيانات", "Data as of")
+    note = tr("بيانات اصطناعية", "Synthetic data")  # short disclosure kept on every page
     html(f'<div class="head"><div><div class="t">{page_title(i)}</div><div class="s">{tr(PAGES[i][2], PAGES[i][3])}'
-         f'</div></div><div class="meta-line"><span class="pill">● {note}</span>'
-         f'<span class="asof">{as_of}: <bdi>{data_date}</bdi></span></div></div>')
+         f'</div></div><span class="asof">{as_of}: <bdi>{data_date}</bdi> · {note}</span></div>')
 
 
 def hero(tag, title, text):
