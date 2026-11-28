@@ -8,8 +8,8 @@ import streamlit as st
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 import analytics as an  # noqa: E402
+import custom_data as cd  # noqa: E402
 import ui  # noqa: E402
-from build_features import EXTRACT  # noqa: E402
 from i18n import set_lang, tr  # noqa: E402
 
 st.set_page_config(page_title="Facility Planning AI", page_icon="assets/logo.svg", layout="wide",
@@ -35,7 +35,7 @@ set_lang(code)
 # in the new language (otherwise the old text stays, or the menu loses its highlight).
 if st.session_state.get("shown_lang", code) != code:
     for name in ["theme", "page", "ov_days", "ov_region", "risk_class", "ct_days", "memo_days",
-                 "memo_priority", "reviewer", "approve", "demo"]:
+                 "memo_priority", "reviewer", "approve", "demo", "history_source", "consent"]:
         if name in st.session_state:
             st.session_state[name] = st.session_state[name]
 st.session_state.shown_lang = code
@@ -46,14 +46,31 @@ st.query_params["lang"] = code
 st.query_params["theme"] = theme
 ui.inject(dark)
 
-data, model = boot()
-wo = data["wo"]
+custom = st.session_state.get("custom")  # an uploaded history, kept for this session only
+data, model = (custom["data"], custom["model"]) if custom else boot()
+wo, ASOF = data["wo"], data["asof"]
+is_custom = data["source"] == "custom"
+
+
+def reset_choices():
+    """Forget selections that may not exist in the other data set."""
+    for name in ["ov_region", "memo_priority", "approve", "reviewer", "risk_class", "chat", "demo"]:
+        st.session_state.pop(name, None)
+
+
+def use_sample_data():
+    reset_choices()
+    st.session_state.pop("custom", None)
+
 
 ui.brand()
 page = st.sidebar.radio("menu", range(len(ui.PAGES)), key="page", label_visibility="collapsed",
                         format_func=lambda i: f"{ui.ICONS[i]} {ui.page_title(i)}")
+if is_custom:
+    st.sidebar.button(tr("العودة للبيانات التجريبية", "Back to the sample data"), on_click=use_sample_data,
+                      key="back_side", icon=":material/undo:", width="stretch")
 ui.sidebar_art()
-ui.header(page, f"{EXTRACT:%Y-%m-%d}")
+ui.header(page, f"{ASOF:%Y-%m-%d}", is_custom)
 
 PCT = ["breach_rate", "probability", "difference_vs_average", "previous_rate", "recent_rate", "change",
        "repeat_share", "facility_breach_180d", "actual_rate", "flag_rate", "recall", "precision",
@@ -61,7 +78,7 @@ PCT = ["breach_rate", "probability", "difference_vs_average", "previous_rate", "
 
 
 def days_back(d):
-    return EXTRACT - pd.Timedelta(days=d)
+    return ASOF - pd.Timedelta(days=d)
 
 
 def period_select(options, default, key):
@@ -79,12 +96,22 @@ def with_drivers(frame):
 
 def change(value, unit="", up_is_good=True):
     """Delta label and tone for a difference between two periods."""
+    if pd.isna(value):
+        return tr("لا فترة سابقة", "No earlier period"), "flat"
     if abs(value) < 1e-9:
         return tr("بلا تغيير", "No change"), "flat"
     arrow = "▲" if value > 0 else "▼"
     tone = "good" if (value > 0) == up_is_good else "bad"
     text = f"{abs(value):,.1f}" if isinstance(value, float) else f"{abs(value):,}"
     return f"{arrow} {text} {unit}".strip(), tone
+
+
+def pct_text(value, digits=1):
+    return "—" if pd.isna(value) else f"{value:.{digits}%}"
+
+
+def no_model():
+    ui.message(tr(*data["note"]), "warn")
 
 
 def risk_name(code):
@@ -124,9 +151,10 @@ def about():
         (5, "📝", tr("مذكرة قرار تُنزَّل بعد اعتماد بشري.", "A decision memo, downloadable after human approval.")),
         (6, "💬", tr("اسأل بالعربية أو الإنجليزية، والأرقام محسوبة من البيانات.", "Ask in Arabic or English; numbers come from data.")),
         (7, "📂", tr("ارفع أوامر جديدة، والبيانات الخاطئة تُرفض مع السبب.", "Upload new orders; bad rows are rejected with a reason.")),
-        (8, "📘", tr("المنهجية ومعايير القبول وحدود النظام.", "Method, acceptance criteria and limits."))]
-    for start in range(0, len(features), 4):
-        for col, (index, icon, description) in zip(st.columns(4), features[start:start + 4]):
+        (8, "🗄️", tr("ارفع سجلك التاريخي فتتحدث كل الصفحات.", "Upload your history and every page updates.")),
+        (9, "📘", tr("المنهجية ومعايير القبول وحدود النظام.", "Method, acceptance criteria and limits."))]
+    for start in range(0, len(features), 3):
+        for col, (index, icon, description) in zip(st.columns(3), features[start:start + 3]):
             with col:
                 ui.html(ui.feature(icon, ui.page_title(index), description))
                 st.button(tr("افتح", "Open"), key=f"go{index}", on_click=go_to, args=(index,), width="stretch")
@@ -136,9 +164,13 @@ def about():
               (tr("الذكاء", "Intelligence"), tr("نموذج تنبؤ ودرجة مخاطر", "Prediction model and risk score")),
               (tr("التوصية", "Recommendation"), tr("إجراء ودليل ومالك", "Action, evidence, owner")),
               (tr("القرار", "Decision"), tr("الإنسان يعتمد", "A human approves"))])
-    ui.message(tr("البيانات المستخدمة اصطناعية، والنتائج تثبت المنهجية ولا تمثل أي عقد أو جهة حقيقية.",
-                  "All data is synthetic. Results demonstrate the method and represent no real contract or organisation."),
-               "warn")
+    if is_custom:
+        ui.message(tr("الصفحات تعرض الآن الملف الذي رفعته. دقة النتائج تعتمد على جودة بياناتك.",
+                      "Pages now show the file you uploaded. Results are only as good as that data."), "warn")
+    else:
+        ui.message(tr("البيانات المستخدمة اصطناعية، والنتائج تثبت المنهجية ولا تمثل أي عقد أو جهة حقيقية.",
+                      "All data is synthetic. Results demonstrate the method and represent no real contract or "
+                      "organisation."), "warn")
 
 
 # ------------------------------------------------------------------ 1. dashboard
@@ -149,7 +181,7 @@ def overview():
     region = c2.selectbox(tr("المنطقة", "Region"), ["all"] + sorted(data["fac"].region.unique()), key="ov_region",
                           format_func=lambda r: tr("كل المناطق", "All regions") if r == "all" else r)
     base = wo if region == "all" else wo[wo.region == region]
-    now = an.kpis(an.period(base, days_back(days), EXTRACT))
+    now = an.kpis(an.period(base, days_back(days), ASOF))
     prev = an.kpis(an.period(base, days_back(2 * days), days_back(days)))
     risk = data["risk_f"] if region == "all" else data["risk_f"][data["risk_f"].region == region]
     vs = tr("عن السابقة", "vs previous")
@@ -157,7 +189,7 @@ def overview():
     t3, k3 = change(now["breaches"] - prev["breaches"], vs, up_is_good=False)
     t4, k4 = change(float((now["compliance"] - prev["compliance"]) * 100), tr("نقطة", "pts"))
     ui.grid([ui.kpi(tr("أوامر العمل", "Work orders"), f"{now['total']:,}", t1),
-             ui.kpi(tr("الالتزام بـ SLA", "SLA compliance"), f"{now['compliance']:.1%}", t4, k4),
+             ui.kpi(tr("الالتزام بـ SLA", "SLA compliance"), pct_text(now["compliance"]), t4, k4),
              ui.kpi(tr("خروقات SLA", "SLA breaches"), f"{now['breaches']:,}", t3, k3),
              ui.kpi(tr("أوامر مفتوحة", "Open work orders"), f"{now['open']:,}",
                     tr("المكتملة", "Completed") + f": {now['completed']:,}")])
@@ -165,18 +197,20 @@ def overview():
     o = an.open_orders(data, model)
     if region != "all":
         o = o[o.region == region]
-    regions = an.by_group(an.period(wo, days_back(days), EXTRACT), "region")
+    regions = an.by_group(an.period(wo, days_back(days), ASOF), "region").dropna(subset=["breach_rate"])
     n_alert = int(o.alert.sum())
-    cards = [ui.insight(tr(f"{n_alert} أمر مفتوح يحتاج متابعة", f"{n_alert} open orders need follow-up"),
-                        tr(f"فوق عتبة التنبيه من أصل {len(o)} أمر مفتوح", f"Above the alert threshold, of {len(o)} open"),
-                        "bad" if n_alert else "good")]
+    cards = [] if model is None else [
+        ui.insight(tr(f"{n_alert} أمر مفتوح يحتاج متابعة", f"{n_alert} open orders need follow-up"),
+                   tr(f"فوق عتبة التنبيه من أصل {len(o)} أمر مفتوح", f"Above the alert threshold, of {len(o)} open"),
+                   "bad" if n_alert else "good")]
     if len(risk):
         top_f = risk.iloc[0]
         cards.append(ui.insight(
             tr(f"أولى المرافق بالتدخل: {top_f.facility_id}", f"First facility to act on: {top_f.facility_id}"),
             tr(f"درجة مخاطر {top_f.risk_score:.0f} من 100 (آخر 90 يوماً)",
                f"Risk score {top_f.risk_score:.0f} of 100 (last 90 days)"), "warn"))
-    cards.append(ui.insight(
+    if len(regions):
+        cards.append(ui.insight(
         tr(f"أعلى منطقة خرقاً: {regions.index[0]}", f"Most breaches: {regions.index[0]}"),
         tr(f"{regions.breach_rate.iloc[0]:.0%} خلال آخر {days} يوماً",
            f"{regions.breach_rate.iloc[0]:.0%} over the last {days} days")))
@@ -189,7 +223,7 @@ def overview():
         ui.trend(an.monthly(an.valid_rows(base)).breach_rate, dark)
     with right:
         ui.section(tr("توزيع الأولويات", "Priority mix"), tr(f"آخر {days} يوماً", f"Last {days} days"))
-        ui.donut(an.period(base, days_back(days), EXTRACT).priority.value_counts().sort_index(), dark)
+        ui.donut(an.period(base, days_back(days), ASOF).priority.value_counts().sort_index(), dark)
     ui.section(tr("أداء المناطق", "Regional performance"),
                tr("كل المناطق، مرتبة من الأعلى خرقاً", "All regions, highest breach rate first"))
     ui.bars(regions.breach_rate, dark)
@@ -199,6 +233,9 @@ def overview():
 
 # ------------------------------------------------------------------ 2. prediction
 def prediction():
+    if model is None:
+        no_model()
+        return
     t = data["test"]
     o = an.open_orders(data, model)
     tab1, tab2, tab3 = st.tabs([tr("التنبيهات الحالية", "Current alerts"), tr("أداء النموذج", "Model performance"),
@@ -273,27 +310,35 @@ def risks():
                            [(tr("أوامر العمل", "Work orders"), f"{int(x.work_orders):,}"),
                             (tr("نسبة الخرق", "Breach rate"), f"{x.breach_rate:.0%}"),
                             (tr("الترتيب", "Rank"), i + 1)]) for i, x in enumerate(data["risk_c"].itertuples())], 3)
-        st.caption(tr("لون البطاقة يعبر عن الترتيب بين العقود الثلاثة، وليس عن حد مطلق.",
-                      "Card colour shows the rank among the three contracts, not an absolute limit."))
+        st.caption(tr("لون البطاقة يعبر عن الترتيب بين العقود، وليس عن حد مطلق.",
+                      "Card colour shows the rank among contracts, not an absolute limit."))
     with tab3:
         ui.message(tr("درجة قاعدية (0-100) من خمسة مؤشرات بأوزان متساوية خلال 90 يوماً. ليست تنبؤ النموذج.",
                       "A rule-based score (0-100) from five equally weighted indicators over 90 days. "
                       "It is not the model's prediction."))
         ui.section(tr("التحقق: هل ترتّب الدرجة أداء الربع التالي؟", "Check: does the score rank next-quarter performance?"))
-        ui.table(data["risk_val"], PCT, index=False)
-        ui.message(tr("الارتباط موجب (حوالي 0.5)، لكن نسبة الخرق السابقة وحدها تنبأت أفضل في 4 فترات من 5. "
-                      "استخدم الدرجة لترتيب الأولويات وفهم الأبعاد، لا كأداة تنبؤ.",
-                      "The correlation is positive (about 0.5), but past breach rate alone predicted better in 4 of "
-                      "5 periods. Use the score to prioritise and explain, not to predict."), "warn")
+        v = data["risk_val"]
+        if v.empty:
+            ui.message(tr("التاريخ أو عدد المرافق لا يكفي للتحقق من الدرجة.",
+                          "Not enough history or facilities to check the score."), "warn")
+            return
+        ui.table(v, PCT, index=False)
+        mean = v.spearman_score_vs_next.mean()
+        better = int((v.spearman_past_breach_only > v.spearman_score_vs_next).sum())
+        ui.message(tr(f"متوسط ارتباط الدرجة بالفترة التالية {mean:.2f}، ونسبة الخرق السابقة وحدها تنبأت أفضل في "
+                      f"{better} من {len(v)} فترات. استخدم الدرجة لترتيب الأولويات وفهم الأبعاد، لا كأداة تنبؤ.",
+                      f"Mean rank correlation with the next period: {mean:.2f}. Past breach rate alone predicted better "
+                      f"in {better} of {len(v)} periods. Use the score to prioritise and explain, not to predict."),
+                   "warn")
 
 
 # ------------------------------------------------------------------ 4. contractors
 def contractors():
     days = period_select([90, 180, 365], 90, "ct_days")
-    g = an.by_group(an.period(wo, days_back(days), EXTRACT), "contractor_id")
+    g = an.by_group(an.period(wo, days_back(days), ASOF), "contractor_id").dropna(subset=["breach_rate"])
     avg = g.breaches.sum() / g.known.sum()
     cards = []
-    for cid, x in g.iterrows():
+    for cid, x in g.head(12).iterrows():
         tone = "bad" if x.breach_rate > avg * 1.2 else "good" if x.breach_rate < avg * 0.8 else "warn"
         label = {"bad": tr("أعلى من المتوسط", "Above average"), "warn": tr("قرب المتوسط", "Near average"),
                  "good": tr("أقل من المتوسط", "Below average")}[tone]
@@ -311,11 +356,16 @@ def contractors():
     with tab2:
         ui.table(g, PCT)
     with tab3:
-        ui.table(data["groups"], PCT, index=False)
-        ui.message(tr("النموذج لا ينبّه تقريباً على المقاولين ذوي نسبة الخرق المنخفضة، فتفوته خروقاتهم. "
-                      "يلزم متابعتهم بطريقة أخرى.",
-                      "The model almost never alerts on low-breach contractors, so their breaches are missed. "
-                      "They need another follow-up method."), "error")
+        if model is None:
+            no_model()
+        else:
+            ui.table(data["groups"], PCT, index=False)
+            missed = data["groups"][data["groups"].recall < 0.2].contractor_id.tolist()
+            if missed:
+                names = "، ".join(map(str, missed[:6]))
+                ui.message(tr(f"النموذج يغفل معظم خروقات: {names}. يلزم متابعتهم بطريقة أخرى.",
+                              f"The model misses most breaches of: {', '.join(map(str, missed[:6]))}. "
+                              "They need another follow-up method."), "error")
     ui.message(tr("المقارنة ارتباطية: تختلف المرافق ونوع الأعمال وحجمها بين المقاولين.",
                   "This is a descriptive comparison: facilities, work mix and volume differ between contractors."), "warn")
 
@@ -323,21 +373,22 @@ def contractors():
 # ------------------------------------------------------------------ 5. decision memo
 def memo():
     days = period_select([30, 90, 180], 90, "memo_days")
-    now = an.kpis(an.period(wo, days_back(days), EXTRACT))
+    now = an.kpis(an.period(wo, days_back(days), ASOF))
     prev = an.kpis(an.period(wo, days_back(2 * days), days_back(days)))
     recs = an.recommendations(data, model, days)
     title = tr(f"مذكرة قرار: أداء أوامر العمل خلال آخر {days} يوماً",
                f"Decision memo: work order performance, last {days} days")
-    meta = tr(f"تاريخ البيانات: {EXTRACT:%Y-%m-%d} · بيانات اصطناعية · المقارنة مع الـ {days} يوماً السابقة",
-              f"Data as of {EXTRACT:%Y-%m-%d} · synthetic data · compared with the previous {days} days")
+    kind = tr("ملف مرفوع من المستخدم", "user-uploaded file") if is_custom else tr("بيانات اصطناعية", "synthetic data")
+    meta = tr(f"تاريخ البيانات: {ASOF:%Y-%m-%d} · {kind} · المقارنة مع الـ {days} يوماً السابقة",
+              f"Data as of {ASOF:%Y-%m-%d} · {kind} · compared with the previous {days} days")
     ui.memo_head(title, meta)
     a, _ = change(now["total"] - prev["total"], tr("أمر", "orders"))
     b, kb = change(now["breaches"] - prev["breaches"], tr("خرق", "breaches"), up_is_good=False)
     c, kc = change(float((now["compliance"] - prev["compliance"]) * 100), tr("نقطة", "pts"))
     compare = [ui.compare_card(tr("أوامر العمل", "Work orders"), f"{now['total']:,}", f"{prev['total']:,}", a, "flat"),
                ui.compare_card(tr("خروقات SLA", "SLA breaches"), f"{now['breaches']:,}", f"{prev['breaches']:,}", b, kb),
-               ui.compare_card(tr("الالتزام بـ SLA", "SLA compliance"), f"{now['compliance']:.1%}",
-                               f"{prev['compliance']:.1%}", c, kc)]
+               ui.compare_card(tr("الالتزام بـ SLA", "SLA compliance"), pct_text(now["compliance"]),
+                               pct_text(prev["compliance"]), c, kc)]
     ui.grid(compare, 3)
     st.caption(tr(f"الرقم المشطوب هو الفترة السابقة. الأوامر المفتوحة ضمن مدة SLA ({now['open']}) لا تدخل في الالتزام.",
                   f"Struck-through figures are the previous period. Open orders still within SLA ({now['open']}) "
@@ -346,18 +397,23 @@ def memo():
     ui.section(tr("الإجراءات المقترحة", "Proposed actions"),
                tr(f"{len(recs)} إجراءات مرتبة حسب الأولوية، كل إجراء بدليله ومالكه",
                   f"{len(recs)} actions by priority, each with evidence and owner"))
+    if recs.empty:
+        recs = pd.DataFrame(columns=["priority", "action", "evidence", "owner", "ids"])
     options = ["all"] + [p for p in ui.PRIORITY if p in set(recs.priority)]
     pick = st.radio(tr("عرض الأولوية", "Show priority"), options, horizontal=True, key="memo_priority",
                     format_func=lambda p: tr("الكل", "All") if p == "all" else tr(*ui.PRIORITY[p][:2]))
     ui.actions(recs if pick == "all" else recs[recs.priority == pick])
 
-    caveats = [tr("العلاقات ارتباطية ولا تثبت سبباً.", "Relationships are associations, not proven causes."),
-               tr(f"دقة تنبيه النموذج في الاختبار {data['test']['precision']:.0%} ويكتشف "
-                  f"{data['test']['recall']:.0%} من الخروقات.",
-                  f"In testing, alert precision was {data['test']['precision']:.0%} and the model caught "
-                  f"{data['test']['recall']:.0%} of breaches."),
-               tr("لا يُنفذ أي إجراء دون موافقة بشرية.", "No action is taken without human approval."),
-               tr("البيانات اصطناعية ولا تمثل عقداً حقيقياً.", "The data is synthetic and represents no real contract.")]
+    t = data["test"]
+    model_note = (tr("لا يوجد نموذج تنبؤ لهذه البيانات.", "There is no prediction model for this data.") if model is None
+                  else tr(f"دقة تنبيه النموذج في الاختبار {t['precision']:.0%} ويكتشف {t['recall']:.0%} من الخروقات.",
+                          f"In testing, alert precision was {t['precision']:.0%} and the model caught "
+                          f"{t['recall']:.0%} of breaches."))
+    data_note = (tr("النتائج من ملف رفعه المستخدم ولم تُراجع جودته خارج الفحص الآلي.",
+                    "Results come from a user file checked only by automatic rules.") if is_custom
+                 else tr("البيانات اصطناعية ولا تمثل عقداً حقيقياً.", "The data is synthetic and represents no real contract."))
+    caveats = [tr("العلاقات ارتباطية ولا تثبت سبباً.", "Relationships are associations, not proven causes."), model_note,
+               tr("لا يُنفذ أي إجراء دون موافقة بشرية.", "No action is taken without human approval."), data_note]
     left, right = st.columns(2)
     with left:
         ui.html(ui.panel(tr("تحفظات", "Caveats"), ui.listing(caveats, True)))
@@ -415,6 +471,9 @@ def assistant():
 
 # ------------------------------------------------------------------ 7. upload check
 def upload():
+    if model is None:
+        no_model()
+        return
     ui.steps([(tr("جهّز الملف", "Prepare"), tr("CSV بالأعمدة الإلزامية", "CSV with required columns")),
               (tr("ارفعه", "Upload"), tr("أو شغّل مثالاً جاهزاً", "Or run a ready example")),
               (tr("فحص تلقائي", "Validate"), tr("الصف الخاطئ يُرفض مع السبب", "Bad rows are rejected with a reason")),
@@ -422,16 +481,20 @@ def upload():
     st.markdown(tr("الأعمدة الإلزامية: ", "Required columns: ")
                 + "`wo_id, created_at, priority, scope, facility_id` "
                 + tr("والاختياري", "and optional") + " `asset_id`.")
+    if is_custom:
+        ui.message(tr("استخدم أرقام المرافق والنطاقات الموجودة في سجلك، وتواريخ قريبة من آخر تاريخ فيه.",
+                      "Use facility IDs and scopes from your history, dated near its latest date."))
     c = st.columns(2)
-    for col, (label, path) in zip(c, [(tr("ملف تجريبي سليم", "Valid sample file"), "samples/new_orders_ok.csv"),
-                                      (tr("ملف تجريبي به أخطاء", "Sample file with errors"),
-                                       "samples/new_orders_errors.csv")]):
+    samples = [] if is_custom else [(tr("ملف تجريبي سليم", "Valid sample file"), "samples/new_orders_ok.csv"),
+                                    (tr("ملف تجريبي به أخطاء", "Sample file with errors"),
+                                     "samples/new_orders_errors.csv")]
+    for col, (label, path) in zip(c, samples):
         with open(path, "rb") as f:
             col.download_button(label, f.read(), file_name=os.path.basename(path), icon=":material/download:",
                                 width="stretch")
     names = {"none": tr("لا", "None"), "ok": tr("السليم", "Valid"), "err": tr("الذي به أخطاء", "With errors")}
-    demo = st.radio(tr("أو شغّل مثالاً مباشرة", "Or run an example"), list(names), format_func=names.get,
-                    horizontal=True, key="demo")
+    demo = "none" if is_custom else st.radio(tr("أو شغّل مثالاً مباشرة", "Or run an example"), list(names),
+                                             format_func=names.get, horizontal=True, key="demo")
     file = st.file_uploader(tr("ملف CSV", "CSV file"), type="csv", key="upload_file")
     source = file
     if source is None and demo != "none":
@@ -469,41 +532,135 @@ def upload():
                       "The last columns are context for review, not a causal explanation."))
 
 
-# ------------------------------------------------------------------ 8. method
+# ------------------------------------------------------------------ 8. my data
+def apply_history(good):
+    """Analyse the history and make it the active data of this session. Returns an error message or None."""
+    try:
+        new_data, new_model = cd.build_dataset(good, boot()[0]["sla"])
+    except Exception as error:  # show the reason instead of a crash page
+        return str(error)
+    reset_choices()
+    st.session_state.custom = {"data": new_data, "model": new_model}
+    return None
+
+
+def my_data():
+    ui.steps([(tr("جهّز السجل", "Prepare"), tr("CSV لأوامر عمل سابقة", "CSV of past work orders")),
+              (tr("ارفعه", "Upload"), tr("أو جرّب السجل التجريبي", "Or try the sample history")),
+              (tr("فحص تلقائي", "Validate"), tr("الصف الخاطئ يُرفض مع السبب", "Bad rows are rejected with a reason")),
+              (tr("طبّق", "Apply"), tr("كل الصفحات تتحدث لجلستك", "Every page updates for your session"))])
+    if is_custom:
+        ui.message(tr(f"كل الصفحات تعرض الآن سجلك ({len(wo):,} أمر عمل، حتى ⁦{ASOF:%Y-%m-%d}⁩).",
+                      f"Every page now shows your history ({len(wo):,} work orders, up to {ASOF:%Y-%m-%d})."), "ok")
+        if model is None:
+            no_model()
+        st.button(tr("العودة للبيانات التجريبية", "Back to the sample data"), on_click=use_sample_data,
+                  key="back_page", icon=":material/undo:")
+    ui.message(tr("تنبيه: هذا رابط عام على خادم خارجي. لا ترفع بيانات حقيقية أو سرية من جهة عملك. استخدم بيانات "
+                  "اصطناعية، أو مجهولة الهوية وبتصريح. الملف لا يُحفظ ويزول بإغلاق الصفحة أو تحديثها.",
+                  "Warning: this is a public link on an external server. Do not upload real or confidential company "
+                  "data; use synthetic data, or anonymised data you are authorised to share. The file is not saved "
+                  "and disappears when the page is closed or reloaded."), "error")
+    st.markdown(tr("الأعمدة الإلزامية: ", "Required columns: ") + "`" + ", ".join(cd.REQUIRED) + "`  \n"
+                + tr("الاختيارية: ", "Optional: ") + "`" + ", ".join(cd.OPTIONAL) + "`  \n"
+                + tr("التاريخ بصيغة YYYY-MM-DD HH:MM، والأولوية P1 إلى P4، و`completed_at` فارغ للأمر المفتوح.",
+                     "Dates as YYYY-MM-DD HH:MM, priority P1 to P4, `completed_at` empty for open orders."))
+    c = st.columns(2)
+    for col, (label, path) in zip(c, [(tr("قالب الأعمدة", "Column template"), "samples/history_template.csv"),
+                                      (tr("سجل تجريبي كامل", "Full sample history"), "samples/history_sample.csv")]):
+        with open(path, "rb") as f:
+            col.download_button(label, f.read(), file_name=os.path.basename(path), icon=":material/download:",
+                                width="stretch")
+    kinds = {"file": tr("ملفي", "My file"), "sample": tr("السجل التجريبي (اصطناعي)", "Synthetic sample history")}
+    sample = st.radio(tr("مصدر السجل", "History source"), list(kinds), format_func=kinds.get, horizontal=True,
+                      key="history_source") == "sample"
+    file = None if sample else st.file_uploader(tr("سجل أوامر العمل (CSV)", "Work order history (CSV)"), type="csv",
+                                                key="history_file")
+    source = "samples/history_sample.csv" if sample else file
+    if source is None:
+        return
+    try:
+        raw = pd.read_csv(source, dtype=str, encoding="utf-8-sig")
+    except Exception:
+        ui.message(tr("تعذرت قراءة الملف. تأكد أنه CSV بترميز UTF-8.", "Could not read the file. Use a UTF-8 CSV."), "error")
+        return
+    good, bad, fatal = cd.validate_history(raw, boot()[0]["sla"])
+    if good is not None:
+        ui.grid([ui.kpi(tr("صفوف مقروءة", "Rows read"), f"{len(raw):,}"),
+                 ui.kpi(tr("مقبولة", "Accepted"), f"{len(good):,}", "", "good"),
+                 ui.kpi(tr("مرفوضة", "Rejected"), f"{len(bad):,}",
+                        tr("مع سبب كل صف", "With a reason each") if len(bad) else "", "bad" if len(bad) else "flat")])
+        if len(bad):
+            ui.table(bad.head(100), index=False)
+    if fatal:
+        ui.message(fatal, "error")
+        return
+    consent = sample or st.checkbox(tr("أؤكد أن الملف لا يحوي بيانات سرية، أو أني مخوّل برفعه بعد إخفاء الهوية",
+                                       "I confirm the file holds no confidential data, or I am authorised to share "
+                                       "this anonymised copy"), key="consent")
+    if st.button(tr("طبّق على كل الصفحات", "Apply to every page"), key="apply", disabled=not consent,
+                 icon=":material/check_circle:", type="primary"):
+        with st.spinner(tr("جارٍ التحليل وتدريب النموذج...", "Analysing the history and training the model...")):
+            error = apply_history(good)
+        if error:
+            ui.message(error, "error")
+        else:
+            st.rerun()
+
+
+# ------------------------------------------------------------------ 9. method
 def method():
     t = data["test"]
-    ui.steps([(tr("البيانات", "Data"), tr("24 ألف أمر عمل اصطناعي", "24k synthetic work orders")),
+    count = (tr(f"{len(wo):,} أمر عمل من ملفك", f"{len(wo):,} work orders from your file") if is_custom
+             else tr("24 ألف أمر عمل اصطناعي", "24k synthetic work orders"))
+    ui.steps([(tr("البيانات", "Data"), count),
               (tr("الجودة", "Quality"), tr("فحص وتنظيف موثق", "Documented cleaning")),
               (tr("الخصائص", "Features"), tr("المتاح وقت الإنشاء فقط", "Known at creation only")),
               (tr("النموذج", "Model"), tr("تنبؤ + درجة مخاطر", "Prediction + risk score")),
               (tr("التوصيات", "Actions"), tr("إجراء ودليل ومالك", "Action, evidence, owner")),
               (tr("مراجعة بشرية", "Human review"), tr("لا تنفيذ دون موافقة", "Nothing without approval"))])
-    pr = data["results"].PR_AUC
-    ui.grid([ui.kpi(tr("PR-AUC في الاختبار", "Test PR-AUC"), f"{pr.iloc[-1]:.3f}",
-                    tr("القاعدة البسيطة", "Simple rule") + f": {pr.iloc[1]:.3f}", "info"),
-             ui.kpi(tr("الاكتشاف", "Recall"), f"{t['recall']:.0%}", tr("من الخروقات", "Of breaches")),
-             ui.kpi(tr("دقة التنبيه", "Alert precision"), f"{t['precision']:.0%}",
-                    tr("منخفضة نسبياً", "Relatively low"), "warn"),
-             ui.kpi(tr("اختبار التسرب", "Leakage test"), "PASS", tr("لا معلومات مستقبلية", "No future data"), "good")])
-    ui.grid([
-        ui.panel(tr("النموذج والتحقق", "Model and validation"), ui.listing([
-            f"{t['chosen_model']} (Gradient Boosting)",
-            tr("التدريب: أكتوبر 2024 - ديسمبر 2025", "Training: Oct 2024 - Dec 2025"),
-            tr("الاختيار على التحقق: يناير - مارس 2026", "Selection on validation: Jan - Mar 2026"),
-            tr("الاختبار مرة واحدة: أبريل - يونيو 2026", "Tested once: Apr - Jun 2026")])),
+    panels = []
+    if model is None:
+        no_model()
+    else:
+        panels.append(method_model(t))
+    panels += [
         ui.panel(tr("معايير القبول", "Acceptance criteria"), ui.listing([
             tr("كل رقم محسوب من ملفات البيانات", "Every number is computed from data files"),
             tr("البيانات المفقودة تُرفض ولا تُخمَّن", "Missing data is rejected, never guessed"),
             tr("السؤال خارج البيانات يُرفض", "Out-of-data questions are refused"),
             tr("لا اعتماد دون مراجعة بشرية", "No approval without human review"),
-            tr("الإفصاح عن البيانات الاصطناعية ظاهر دائماً", "Synthetic data is always disclosed")])),
+            tr("مصدر البيانات ظاهر في كل صفحة", "The data source is shown on every page")])),
         ui.panel(tr("الحدود", "Limits"), ui.listing([
-            tr("العلاقات في البيانات مزروعة؛ النتائج تثبت المنهجية فقط",
-               "Relationships are planted; results prove the method only"),
-            tr("التنبيهات غير متوازنة بين المقاولين", "Alerts are uneven across contractors"),
+            tr("نتائج الملف المرفوع تعتمد على جودته", "Results depend on the quality of the uploaded file")
+            if is_custom else tr("العلاقات في البيانات مزروعة؛ النتائج تثبت المنهجية فقط",
+                                 "Relationships are planted; results prove the method only"),
+            tr("قد تتفاوت التنبيهات بين المقاولين", "Alerts may be uneven across contractors"),
             tr("الارتباط لا يثبت السببية", "Correlation does not prove cause"),
             tr("أوامر العمل Corrective فقط", "Corrective work orders only"),
-            tr("المساعد يفهم أنواعاً محددة من الأسئلة", "The assistant handles specific question types")], True))], 3)
+            tr("المساعد يفهم أنواعاً محددة من الأسئلة", "The assistant handles specific question types")], True))]
+    ui.grid(panels, 3)
 
 
-[about, overview, prediction, risks, contractors, memo, assistant, upload, method][page]()
+def method_model(t):
+    """Show the test figures and return the model panel."""
+    pr = data["results"].PR_AUC
+    p = data["periods"] or {"train": tr("أكتوبر 2024 - ديسمبر 2025", "Oct 2024 - Dec 2025"),
+                            "validation": tr("يناير - مارس 2026", "Jan - Mar 2026"),
+                            "test": tr("أبريل - يونيو 2026", "Apr - Jun 2026")}
+    ui.grid([ui.kpi(tr("PR-AUC في الاختبار", "Test PR-AUC"), f"{pr.iloc[-1]:.3f}",
+                    tr("القاعدة البسيطة", "Simple rule") + f": {pr.iloc[1]:.3f}", "info"),
+             ui.kpi(tr("الاكتشاف", "Recall"), f"{t['recall']:.0%}", tr("من الخروقات", "Of breaches")),
+             ui.kpi(tr("دقة التنبيه", "Alert precision"), f"{t['precision']:.0%}",
+                    tr("من التنبيهات الصحيحة", "Of alerts that were right"), "warn"),
+             ui.kpi(tr("اختبار التسرب", "Leakage test"), "—" if is_custom else "PASS",
+                    tr("نفس الكود، دون اختبار على ملفك", "Same code, not re-tested on your file") if is_custom
+                    else tr("لا معلومات مستقبلية", "No future data"), "flat" if is_custom else "good")])
+    return ui.panel(tr("النموذج والتحقق", "Model and validation"), ui.listing([
+        t["chosen_model"] + ("" if is_custom else " (Gradient Boosting)"),
+        tr("التدريب: ", "Training: ") + p["train"],
+        tr("الاختيار على التحقق: ", "Selection on validation: ") + p["validation"],
+        tr("الاختبار على فترة لاحقة: ", "Tested on a later period: ") + p["test"]]))
+
+
+[about, overview, prediction, risks, contractors, memo, assistant, upload, my_data, method][page]()

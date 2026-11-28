@@ -16,7 +16,7 @@ from i18n import lang, tr
 
 ICONS = [":material/home:", ":material/space_dashboard:", ":material/notifications_active:", ":material/shield:",
          ":material/groups:", ":material/assignment:", ":material/forum:", ":material/upload_file:",
-         ":material/menu_book:"]
+         ":material/database:", ":material/menu_book:"]
 PAGES = [  # (arabic title, english title, arabic subtitle, english subtitle)
     ("نظرة عامة", "Overview", "ما هذا التطبيق وماذا يقدم؟", "What this application is and what it offers"),
     ("لوحة الأداء", "Performance dashboard", "أين نقف الآن، وكيف تغيّر الأداء؟", "Where we stand and how performance moved"),
@@ -26,6 +26,7 @@ PAGES = [  # (arabic title, english title, arabic subtitle, english subtitle)
     ("مذكرة القرار والتوصيات", "Decision memo", "من الأرقام إلى قرار يعتمده إنسان", "From numbers to a human-approved decision"),
     ("المساعد", "Assistant", "اسأل عن بياناتك بالعربية أو الإنجليزية", "Ask about your data in Arabic or English"),
     ("فحص ملف جديد", "Check a new file", "تنبؤ لأوامر جديدة مع رفض البيانات الخاطئة", "Score new work orders and reject bad data"),
+    ("بياناتي", "My data", "ارفع سجل أوامر العمل ليظهر في كل الصفحات", "Upload a work order history and see it on every page"),
     ("المنهجية والحدود", "Method and limits", "كيف بُني النظام وأين حدوده", "How it was built and where it stops"),
 ]
 
@@ -322,9 +323,10 @@ def sidebar_art():
                         f'<figcaption>{note}</figcaption></figure>', unsafe_allow_html=True)
 
 
-def header(i, data_date):
+def header(i, data_date, custom=False):
     as_of = tr("آخر تحديث للبيانات", "Data as of")
-    note = tr("بيانات اصطناعية", "Synthetic data")  # short disclosure kept on every page
+    note = (tr("بياناتك المرفوعة", "Your uploaded data") if custom
+            else tr("بيانات اصطناعية", "Synthetic data"))  # short disclosure kept on every page
     html(f'<div class="head"><div><div class="t">{page_title(i)}</div><div class="s">{tr(PAGES[i][2], PAGES[i][3])}'
          f'</div></div><span class="asof">{as_of}: <bdi>{data_date}</bdi> · {note}</span></div>')
 

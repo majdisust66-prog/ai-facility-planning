@@ -30,7 +30,8 @@ def logistic(C=1.0):
 
 
 def boosting(depth, rate):
-    prep = ColumnTransformer([("cat", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1),
+    prep = ColumnTransformer([("cat", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1,
+                                              max_categories=250),
                                CATEGORICAL)], remainder="passthrough")
     clf = HistGradientBoostingClassifier(
         max_depth=depth, learning_rate=rate, max_iter=200, min_samples_leaf=100,

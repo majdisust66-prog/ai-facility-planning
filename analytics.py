@@ -33,7 +33,8 @@ def load_all():
     read = lambda n: pd.read_csv(f"{DATA}/{n}")
     with open(f"{DATA}/test_summary.json", encoding="utf-8") as f:
         test = json.load(f)
-    return {"wo": wo, "fac": fac, "features": read("model_features.csv"),
+    return {"source": "synthetic", "asof": EXTRACT, "sla": read("sla_matrix.csv"), "periods": None,
+            "note": None, "wo": wo, "fac": fac, "features": read("model_features.csv"),
             "risk_f": read("risk_facility.csv"), "risk_c": read("risk_contract.csv"),
             "results": read("results_test.csv"), "importance": read("feature_importance.csv"),
             "calibration": read("calibration_test.csv"), "groups": read("group_check_contractor.csv"),
@@ -98,8 +99,8 @@ def compare(wo, days=90, key="region", end=EXTRACT):
     return t.sort_values("change", ascending=False)
 
 
-def recurring(wo, days=90, top=10):
-    d = period(wo, EXTRACT - pd.Timedelta(days=days), EXTRACT)
+def recurring(wo, days=90, top=10, end=EXTRACT):
+    d = period(wo, end - pd.Timedelta(days=days), end)
     d = d[(d.status != "Cancelled") & d.asset_id.notna()]
     g = d.groupby(["asset_id", "scope", "facility_id"]).agg(
         reports=("wo_id", "size"), breaches=("sla_breach", "sum"))
@@ -125,11 +126,17 @@ def associations(d):
 
 
 # ------------------------------------------------------------------ prediction
+OPEN_COLUMNS = ["wo_id", "priority", "scope", "region", "facility_id", "contractor_id", "probability",
+                "alert", "hours_left", "contractor_backlog", "facility_breach_180d", "asset_repeat_30d"]
+
+
 def open_orders(data, model):
     wo = data["wo"]
     ids = wo[wo.label_status == "censored_open"].wo_id
     f = data["features"]
     o = f[f.wo_id.isin(ids)].copy()
+    if model is None or o.empty:
+        return pd.DataFrame(columns=OPEN_COLUMNS).astype({"alert": bool})
     o["probability"] = model.predict_proba(o[FEATURES])[:, 1]
     o["alert"] = o.probability >= data["test"]["threshold"]
     o = o.merge(wo[["wo_id", "completion_sla_h", "age_hours_at_extract"]], on="wo_id")
@@ -155,7 +162,8 @@ def validate_upload(up, data):
         up[c] = up[c].astype("string").str.strip()
     dates = pd.to_datetime(up.created_at, format="%Y-%m-%d %H:%M", errors="coerce")
     known_fac, known_ids = set(data["fac"].facility_id), set(data["wo"].wo_id)
-    cut = EXTRACT - pd.Timedelta(days=7)
+    cut = data["asof"] - pd.Timedelta(days=7)
+    scopes = set(data["wo"].scope.dropna())
     reasons = []
     dup = up.wo_id.duplicated(keep=False)
     for i, r in up.iterrows():
@@ -167,7 +175,7 @@ def validate_upload(up, data):
             why.append(tr("صيغة التاريخ يجب أن تكون YYYY-MM-DD HH:MM", "Date must be YYYY-MM-DD HH:MM"))
         if pd.notna(r.priority) and r.priority not in PRIORITIES:
             why.append(tr("أولوية غير معروفة: ", "Unknown priority: ") + r.priority)
-        if pd.notna(r.scope) and r.scope not in SCOPE_GROUP:
+        if pd.notna(r.scope) and r.scope not in scopes:
             why.append(tr("نطاق غير معروف: ", "Unknown scope: ") + r.scope)
         if pd.notna(r.facility_id) and r.facility_id not in known_fac:
             why.append(tr("مرفق غير موجود: ", "Facility not found: ") + r.facility_id)
@@ -178,7 +186,7 @@ def validate_upload(up, data):
         if pd.notna(dates[i]) and dates[i] < cut:
             why.append(tr(f"تاريخ أقدم من فترة التنبؤ (قبل {cut:%Y-%m-%d})",
                           f"Date is older than the prediction window (before {cut:%Y-%m-%d})"))
-        if pd.notna(dates[i]) and dates[i] > EXTRACT + pd.Timedelta(days=30):
+        if pd.notna(dates[i]) and dates[i] > data["asof"] + pd.Timedelta(days=30):
             why.append(tr("تاريخ أبعد من 30 يوماً بعد آخر تحديث للبيانات",
                           "Date is more than 30 days after the last data update"))
         reasons.append(tr("، ", "; ").join(why))
@@ -191,12 +199,14 @@ def validate_upload(up, data):
 
 def score_new(good, data, model):
     wo, fac = data["wo"], data["fac"]
-    sla = pd.read_csv(f"{DATA}/sla_matrix.csv")
+    sla = data["sla"]
     new = good[["wo_id", "created_at", "priority", "scope", "facility_id", "asset_id"]].copy()
     new = new.merge(fac[["facility_id", "region", "contract_id"]], on="facility_id", how="left")
-    mapping = (wo.assign(g=wo.scope.map(SCOPE_GROUP)).groupby(["contract_id", "g"]).contractor_id
-               .agg(lambda s: s.mode().iloc[0]))
-    new["contractor_id"] = [mapping[(c, SCOPE_GROUP[s])] for c, s in zip(new.contract_id, new.scope)]
+    # contractor = the one that usually serves this contract and scope in the history
+    top = lambda s: s.mode().iloc[0]
+    exact = wo.groupby(["contract_id", "scope"]).contractor_id.agg(top).to_dict()
+    by_contract = wo.groupby("contract_id").contractor_id.agg(top).to_dict()
+    new["contractor_id"] = [exact.get((c, s), by_contract.get(c)) for c, s in zip(new.contract_id, new.scope)]
     new = new.merge(sla, on="priority", how="left")
     new["status"], new["completed_at"], new["sla_breach"] = "Waiting", pd.NaT, np.nan
     flags = ["dq_future_created", "dq_date_order", "dq_completed_no_date"]
@@ -215,7 +225,7 @@ def score_new(good, data, model):
 # ------------------------------------------------------------------ recommendations
 def recommendations(data, model, days=90):
     """priority is a code (urgent / high / medium); ids lists the work orders concerned."""
-    wo, risk = data["wo"], data["risk_f"]
+    wo, risk, asof = data["wo"], data["risk_f"], data["asof"]
     recs = []
 
     def add(priority, action, evidence, owner, ids=()):
@@ -238,7 +248,7 @@ def recommendations(data, model, days=90):
                f"Risk score {r.risk_score:.0f}/100; smoothed breach rate {r.breach_rate:.0%} over "
                f"{int(r.work_orders)} work orders; main drivers: {d}"),
             tr("مدير المرفق", "Facility manager"))
-    c = by_group(period(wo, EXTRACT - pd.Timedelta(days=days), EXTRACT), "contractor_id")
+    c = by_group(period(wo, asof - pd.Timedelta(days=days), asof), "contractor_id")
     avg = c.breaches.sum() / c.known.sum()
     for cid, r in c[(c.breach_rate > avg * 1.2) & (c.known >= 50)].iterrows():
         add("high", tr(f"اجتماع أداء مع {cid} وخطة تصحيحية", f"Performance meeting with {cid} and a corrective plan"),
@@ -247,7 +257,7 @@ def recommendations(data, model, days=90):
                f"Breach rate {r.breach_rate:.0%} vs {avg:.0%} average over {days} days "
                f"({int(r.breaches)} of {int(r.known)}); check the work mix before judging"),
             tr("مدير العقد", "Contract manager"))
-    for _, r in recurring(wo, days, 3).iterrows():
+    for _, r in recurring(wo, days, 3, asof).iterrows():
         add("medium", tr(f"تحليل سبب جذري للأصل {r.asset_id} ({r.scope})",
                          f"Root cause analysis for asset {r.asset_id} ({r.scope})"),
             tr(f"{int(r.reports)} بلاغات خلال {days} يوماً", f"{int(r.reports)} reports in {days} days"),
@@ -284,10 +294,10 @@ def copilot(question, data, model):
     """Intent matching by keywords. Returns (answer, table or None, source)."""
     q = normalise(question)
     has = lambda *w: any(normalise(x) in q for x in w)
-    wo = data["wo"]
+    wo, asof = data["wo"], data["asof"]
     m = re.search(r"(\d{2,3})\s*(يوم|day)", q)
     days = int(m.group(1)) if m and 14 <= int(m.group(1)) <= 360 else 90
-    recent = period(wo, EXTRACT - pd.Timedelta(days=days), EXTRACT)
+    recent = period(wo, asof - pd.Timedelta(days=days), asof)
 
     if any(w in q for w in OUT_OF_DATA):
         return (tr("لا أستطيع الإجابة: البيانات المتاحة لا تحتوي على هذه المعلومة "
@@ -300,6 +310,9 @@ def copilot(question, data, model):
                 recommendations(data, model, days), "analytics.recommendations")
     if has("مفتوح", "مرجح", "تنبؤ", "open", "likely", "predict"):
         o = open_orders(data, model)
+        if model is None:
+            return (tr("التنبؤ غير متاح لهذه البيانات لأنها لا تكفي لتدريب نموذج.",
+                       "Prediction is unavailable: this data is too small to train a model."), None, "—")
         return (tr(f"{int(o.alert.sum())} من {len(o)} أمر عمل مفتوح فوق عتبة التنبيه. الاحتمال تقديري وليس مؤكداً.",
                    f"{int(o.alert.sum())} of {len(o)} open work orders are above the alert threshold. "
                    "Probabilities are estimates."),
@@ -329,9 +342,9 @@ def copilot(question, data, model):
     if has("متكرر", "تكرار", "recurr", "repeat", "pattern", "انماط"):
         return (tr(f"أصول عليها 3 بلاغات أو أكثر خلال {days} يوماً. السبب الجذري يحتاج فحصاً ميدانياً.",
                    f"Assets with 3 or more reports in {days} days. Root cause needs a site inspection."),
-                recurring(wo, days), "analytics.recurring")
+                recurring(wo, days, 10, asof), "analytics.recurring")
     if has("منطق", "مناطق", "region", "تدهور", "deteriorat"):
-        t = compare(wo, days, "region")
+        t = compare(wo, days, "region", asof)
         w = ", ".join(t[(t.change > 0) & (t.beyond_noise == tr("نعم", "Yes"))].index)
         msg = (tr(f"مناطق ارتفع فيها الخرق بأكثر من التذبذب العشوائي: {w}.",
                   f"Regions where breaches rose beyond random variation: {w}.") if w
@@ -340,7 +353,7 @@ def copilot(question, data, model):
         return (msg + tr(f" (آخر {days} يوماً مقابل ما قبلها)", f" (last {days} days vs the period before)"),
                 t.reset_index(), "analytics.compare")
     if has("قارن", "مقارنه", "compare", "فتره", "period"):
-        a = kpis(period(wo, EXTRACT - pd.Timedelta(days=2 * days), EXTRACT - pd.Timedelta(days=days)))
+        a = kpis(period(wo, asof - pd.Timedelta(days=2 * days), asof - pd.Timedelta(days=days)))
         b = kpis(recent)
         t = pd.DataFrame({tr("السابقة", "Previous"): a, tr("الحالية", "Current"): b})
         return (tr(f"الالتزام بـ SLA: {a['compliance']:.1%} ثم {b['compliance']:.1%} (فترتان من {days} يوماً).",
