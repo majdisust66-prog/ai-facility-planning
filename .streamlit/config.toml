@@ -2,6 +2,9 @@
 base = "light"
 primaryColor = "#0f766e"
 
+[server]
+maxUploadSize = 20
+
 [client]
 toolbarMode = "minimal"
 
